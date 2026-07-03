@@ -1,0 +1,132 @@
+clear all
+close all
+clc
+addpath(genpath('D:\Code'))
+% addpath(genpath('F:\codes\general'))
+% addpath('H:\HMI_temp\mouse\code')
+%% HMI File
+mpT='F:\Mouse2\2026.03.02\38_121_Coffee_D19\MARDI\Fun\T_76_Fs_2\f100_n10_nC4_PRF10_PI';
+main_path=fullfile(mpT,'Fac_2_HP_4_6_5_nC_4_02-March-2026_16-35-59');
+figName='25_HARF_x2f1Fac_2_HP_4_6_5_nC_4_Pos7_Ac1.fig';
+yLV=[7 25]; xLV=[-10 10];%change
+
+cd(main_path) 
+fSh='HARF';
+rSh='BmodeF1p5';
+bFileName=strrep(figName,fSh,rSh);
+bFileName=strrep(bFileName,'.fig','.mat');
+saveName=['ROI_bmode_R.mat'];
+bF='bmodeMat_Fun';
+%% open verasonics bmode
+close all
+uiopen(fullfile(main_path,figName),1);
+set(gcf,'position',[50  270   472   730])
+[x,y,bmodeVer] = getimage(gcf);
+baxialVer=linspace(y(1),y(2),size(bmodeVer,1));
+blatVer=linspace(x(1),x(2),size(bmodeVer,2));
+figure('position',[1   237  600 600]);
+imagesc(blatVer,baxialVer,bmodeVer);colormap gray;axis image
+xlim(xLV)
+ylim(yLV)
+xlabel('Lat (mm)')
+ylabel('Axial (mm)')
+setfigparms
+verBroi=roipoly;
+verParam.blatV=blatVer;
+verParam.baxialV=baxialVer;
+verParam.Bmode=bmodeVer;
+verParam.Roi=verBroi;
+%%
+load(fullfile(main_path,bF,bFileName));
+LogThreshold=-60;
+bmodeLog= 20*log10(bmode/max(bmode(:)));
+bmodeLog(bmodeLog<LogThreshold)=LogThreshold;
+[len, width]=size(bmode);
+tempB=diff(nanmedian(bmode,2)>(mad(nanmedian(bmode,2))/6));
+% [counts,centers]=hist(bmode(find(tempB==1,1,'first'):end,round(size(bmode,2)/2)),100);
+[counts,centers]=hist(bmode(:,round(size(bmode,2)/2)),100);
+bmode_cl=bmode(:);
+ind=find(counts(5:length(counts))>0.2*max(counts)); % skip first few bins due to waterpath
+cutVal=centers(min(ind)+9);
+[index, val]=find(bmode_cl<cutVal);
+bmode_cl(index)=cutVal;
+bmode_norm=reshape(bmode_cl,len,width);
+bmodeLogNorm= 20*log10(bmode_norm/max(bmode_norm(:)));
+bmodeLogNorm(bmodeLogNorm<LogThreshold)=LogThreshold;
+
+% bmodeHist = adapthisteq(bmode_norm/max(bmode_norm(:)));
+bmodeHist = adapthisteq(bmode/max(bmode(:)));
+bmodeLogHist= 20*log10(bmodeHist/max(bmodeHist(:)));
+bmodeLogHist(bmodeLogHist<LogThreshold)=LogThreshold;
+%% convert processed bmode to versonics domain
+[latV,axV]=meshgrid(blatVer,baxialVer);
+[latB,axB]=meshgrid(blat,baxial);
+bLogI=interp2(latB,axB,bmodeLog,latV,axV,'spline');
+figure('position',[50  270   600 600]);
+imagesc(blatVer,baxialVer,bLogI,[LogThreshold+10 0]);colormap gray;axis image
+xlim( xLV)
+ylim([yLV])
+xlabel('Lat (mm)')
+ylabel('Axial (mm)')
+title('Just Hilbert transform')
+setfigparms
+bRoi=roipoly;
+%% get the translation
+vStat=regionprops(verBroi,'Centroid');
+bStat=regionprops(bRoi,'Centroid');
+axTran=bStat.Centroid(2)-vStat.Centroid(2);
+latTran=bStat.Centroid(1)-vStat.Centroid(1);
+verTran=imtranslate(verBroi,[latTran,axTran],'linear','outputview','same');
+translateMm=[latTran*median(diff(blatVer)),axTran*median(diff(baxialVer))];
+tranParam.axTran=axTran;
+tranParam.latTran=latTran;
+tranParam.translateMm=translateMm;
+tranParam.translateRoi=verTran;
+%% show images
+% close all
+figure('position',[50  270   600 600])
+imagesc(blat,baxial,bmodeLog,[LogThreshold+10 0]);colormap gray;hold all;axis image;
+v=caxis;contour(blatVer,baxialVer,verTran,[1 1],'k','LineWidth',2);caxis(v)
+xlabel('Lat (mm)')
+ylabel('Axial (mm)')
+title('Just Hilbert transform')
+axis image;ylim(yLV);xlim(xLV);
+hh1=roipoly;
+figure('position',[50  270   600 600])
+imagesc(blat,baxial,bmodeLogNorm,[LogThreshold+10 0]);colormap gray;axis image;hold all;
+v=caxis;contour(blatVer,baxialVer,verTran,[1 1],'k','LineWidth',2);caxis(v)
+% hold all;contour(blat,baxial,hh1,[1 1],'w','LineWidth',2)
+xlabel('Lat (mm)')
+ylabel('Axial (mm)')
+title('Normalized HT')
+axis image;ylim(yLV);xlim(xLV);
+hh2=roipoly;
+figure('position',[50  270   600 600]);
+imagesc(blat,baxial,bmodeLogHist,[LogThreshold+20 0]);colormap gray;axis image;axis image;hold all;
+v=caxis;contour(blatVer,baxialVer,verTran,[1 1],'k','LineWidth',2);caxis(v)
+% hold all;contour(blat,baxial,hh1,[1 1],'w','LineWidth',2)
+xlabel('Lat (mm)')
+ylabel('Axial (mm)')
+title('Adaptive Hist. HT')
+axis image;ylim(yLV);xlim(xLV);
+hh3=roipoly;
+
+%%
+roiContour=hh1+hh2+hh3;
+roiContour=roiContour>1;
+sT=5;
+figure; imagesc(blat(1:sT:end),baxial(1:sT:end),roiContour(1:sT:end,1:sT:end))
+hold all; contour(blat(1:sT:end),baxial(1:sT:end),hh1(1:sT:end,1:sT:end),[1 1],'k')
+hold all; contour(blat(1:sT:end),baxial(1:sT:end),hh2(1:sT:end,1:sT:end),[1 1],'m')
+hold all; contour(blat(1:sT:end),baxial(1:sT:end),hh3(1:sT:end,1:sT:end),[1 1],'c')
+contour(blatVer,baxialVer,verTran,[1 1],'w','LineWidth',2)
+axis image
+ylim(yLV)
+[xI,yI]=meshgrid(blat(1):0.1:blat(end),baxial(1):0.1:baxial(end));
+[xx,yy]=meshgrid(blat,baxial);
+roiT=interp2(xx,yy,double(roiContour),xI,yI,'spline')>0.5;
+vStat=regionprops(roiT,'EquivDiameter');
+disp(['diameter: ' num2str(vStat.EquivDiameter.*0.1)]);
+%
+save(fullfile(main_path,bF,saveName),'blat','baxial','roiContour','tranParam','verParam');
+

@@ -1,0 +1,78 @@
+clear all
+load('F:\Mouse2\2026.03.03\39_67_Blue_2p3mm_D19\MARDI\Fun\T_76_Fs_2\Step03\Acq15_Ang000_MARDI_03-March-2026_11-55-12\Process_Fun\filtDisp2D\xCorL41p5rF0rF0Filt_25_15.mat')
+Id =1;
+dd=nanmedian(avg_p2p_inte(:,:,1,1),2);
+dd100(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,5),2);
+dd500(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,10),2);
+dd1000(:,Id)=dd;
+load('F:\Mouse2\2026.03.03\39_67_Blue_2p3mm_D19\MARDI\Fun\T_76_Fs_2\Step03\Acq16_Ang015_MARDI_03-March-2026_11-55-12\Process_Fun\filtDisp2D\xCorL41p5rF0rF0Filt_25_16.mat')
+Id=2;
+dd=nanmedian(avg_p2p_inte(:,:,1,1),2);
+dd100(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,5),2);
+dd500(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,10),2);
+dd1000(:,Id)=dd;
+load('F:\Mouse2\2026.03.03\39_67_Blue_2p3mm_D19\MARDI\Fun\T_76_Fs_2\Step03\Acq17_Ang030_MARDI_03-March-2026_11-55-12\Process_Fun\filtDisp2D\xCorL41p5rF0rF0Filt_25_17.mat')
+Id=3;
+dd=nanmedian(avg_p2p_inte(:,:,1,1),2);
+dd100(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,5),2);
+dd500(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,10),2);
+dd1000(:,Id)=dd;
+load('F:\Mouse2\2026.03.03\39_67_Blue_2p3mm_D19\MARDI\Fun\T_76_Fs_2\Step03\Acq18_Ang060_MARDI_03-March-2026_11-55-12\Process_Fun\filtDisp2D\xCorL41p5rF0rF0Filt_25_18.mat')
+Id=4;
+dd=nanmedian(avg_p2p_inte(:,:,1,1),2);
+dd100(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,5),2);
+dd500(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,10),2);
+dd1000(:,Id)=dd;
+load('F:\Mouse2\2026.03.03\39_67_Blue_2p3mm_D19\MARDI\Fun\T_76_Fs_2\Step03\Acq19_Ang090_MARDI_03-March-2026_11-55-12\Process_Fun\filtDisp2D\xCorL41p5rF0rF0Filt_25_19.mat')
+Id=5;
+dd=nanmedian(avg_p2p_inte(:,:,1,1),2);
+dd100(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,5),2);
+dd500(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,10),2);
+dd1000(:,Id)=dd;
+load('F:\Mouse2\2026.03.03\39_67_Blue_2p3mm_D19\MARDI\Fun\T_76_Fs_2\Step03\Acq20_Ang105_MARDI_03-March-2026_11-55-12\Process_Fun\filtDisp2D\xCorL41p5rF0rF0Filt_25_20.mat')
+Id=6;
+dd=nanmedian(avg_p2p_inte(:,:,1,1),2);
+dd100(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,5),2);
+dd500(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,10),2);
+dd1000(:,Id)=dd;
+load('F:\Mouse2\2026.03.03\39_67_Blue_2p3mm_D19\MARDI\Fun\T_76_Fs_2\Step03\Acq21_Ang-15_MARDI_03-March-2026_11-55-12\Process_Fun\filtDisp2D\xCorL41p5rF0rF0Filt_25_21.mat')
+Id=7;
+dd=nanmedian(avg_p2p_inte(:,:,1,1),2);
+dd100(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,5),2);
+dd500(:,Id)=dd;
+dd=nanmedian(avg_p2p_inte(:,:,1,10),2);
+dd1000(:,Id)=dd;
+dd100=dd100(knnsearch(axial,10):knnsearch(axial,20),:);
+dd500=dd500(knnsearch(axial,10):knnsearch(axial,20),:);
+dd1000=dd1000(knnsearch(axial,10):knnsearch(axial,20),:);
+%%
+X = dd100;
+Xc = X- mean(X,2);   % remove mean trend
+[coeff,score,latent] = pca(Xc');
+figure
+scatter(score(:,1),score(:,2),100,'filled')
+text(score(:,1),score(:,2),{'d1','d2','d3','d4','d5','d6','d7'})
+xlabel('PC1')
+ylabel('PC2')
+title('Curve distribution in PCA space')
+%%
+k = 2;   % number of PCs
+X_recon = score(:,1:k)*coeff(:,1:k)';
+X_recon = X_recon';
+err = sqrt(mean((X - X_recon).^2));
+threshold = median(err) + 0.5*std(err);
+
+reject = err > threshold

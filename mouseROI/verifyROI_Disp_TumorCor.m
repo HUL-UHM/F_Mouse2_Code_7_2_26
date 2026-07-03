@@ -1,0 +1,174 @@
+clear all
+close all
+clc
+addpath(genpath('D:\Code'))
+axL=[16 20]; % change
+latRg=[4 10]; % change
+%%
+mpT='F:\Mouse2\2026.02.23\37_56_Violet_D12\MARDI\Fun\T_76_Fs_2\f100_n10_nC4_PRF10_PI\';
+main_path=fullfile(mpT,'Fac_2_HP_4_6_5_nC_4_23-February-2026_12-05-12');
+figName='25_HARF_x2f1Fac_2_HP_4_6_5_nC_4_Pos3_Ac1.fig';
+yLV=[8 26]; xLV=[-11 11];
+cd(main_path) 
+fSh='HARF';
+rSh='BmodeF1p5';
+bFileName=strrep(figName,fSh,rSh);
+bFileName=strrep(bFileName,'.fig','.mat');
+bF='bmodeMat_Fun';
+
+hF1='xCorL41p5rF0rF0Filt_25_01.mat';
+hF2='xCorL41p5rF0rF0Filt_25_01.mat';
+
+yR_2=[0 2]; % change
+incRoiH=0.35; % change
+bkdRoiH=0.35; % change
+bkdRoiMm=2.75;
+offLatMm=2.5;
+shiftVal=170;
+ylimVal=yLV;
+xlimVal=xLV;
+xTickVal=linspace(xlimVal(1),xlimVal(2),2);
+yTickVal=linspace(ylimVal(1),ylimVal(2),4);
+%% load bmode ROI
+loadName='ROI_Final.mat';saveName1='ROI_Final_S.mat';
+load(fullfile(main_path,bF,loadName));
+latR=lat;axR=axial;
+% startPoint=[0.310291402946314 -0.403603676397786 0.378558554555629 0.243900422031436 -1.14354374979373 0.666873566801731];
+
+xcKer='4';
+%% HARF data
+load(fullfile(main_path,'Process_Fun','filtDisp2D',hF1),'avg_p2p_inte')
+avgData1=squeeze(avg_p2p_inte(:,:,1,:));
+load(fullfile(main_path,'Process_Fun','filtDisp2D',hF2),'avg_p2p_inte','lat','axial','factor')
+avgData2=squeeze(avg_p2p_inte(:,:,1,:));
+axInd=knnsearch(axial,axL(1)):knnsearch(axial,axL(2));
+kerN=[round(1.1/median(diff(axial))),round(1.1./median(diff(lat)))];
+normLat=knnsearch(lat,latRg(1)):knnsearch(lat,latRg(2));
+%% Show ROI on Bmode
+uiopen(fullfile(main_path,figName),1);
+set(gcf,'position',[1   236   472   730])
+[x,y,bmodeVer] = getimage(gcf);
+baxialVer=linspace(y(1),y(2),size(bmodeVer,1));
+blatVer=linspace(x(1),x(2),size(bmodeVer,2));
+tic
+% hB=figure('position',[-560   388   560   420]);
+hB=figure('position',[5 25  560   420]);
+imagesc(blatVer,baxialVer+tranParam.translateMm(2),bmodeVer);colormap gray;
+hold all
+contour(lat,axial,roiHMI,[1 1],'k--','LineWidth',2)
+xlim(xLV)
+ylim(yLV)
+xlabel('Lat (mm)')
+ylabel('Axial (mm)')
+setfigparms
+toc
+%% show the ROI
+% close all
+harmFreq=100:100:1e3;
+for fTot=10% use 600,800,1000 to draw the ROI
+    data_med1=nanmedfilt2(avgData1(:,:,fTot),kerN);       
+    normAL=movmean(median(data_med1(axInd,normLat),2),kerN(1));
+    [fitresult] = disp_ax_gauss2_fit(axial(axInd),normAL,startPoint,1);
+    normAL1=feval(fitresult,axial);
+    normMat=repmat(normAL1,1,size(data_med1,2));
+    p2p_norm1=nanmedfilt2(data_med1./normMat,kerN);  
+
+    data_med2=nanmedfilt2(avgData2(:,:,fTot),kerN);
+    data_med=mean(cat(3,data_med2,data_med1),3);
+    normAL=movmean(median(data_med2(axInd,normLat),2),kerN(1));
+    [fitresult] = disp_ax_gauss2_fit(axial(axInd),normAL,startPoint,1);
+    normAL1=feval(fitresult,axial);
+    normMat=repmat(normAL1,1,size(data_med1,2));
+    p2p_norm2=nanmedfilt2(data_med2./normMat,kerN);  
+    p2p_norm=mean(cat(3,p2p_norm2,p2p_norm1),3);
+    
+    h1=figure('Position',[13   525-shiftVal   560   420]);
+    imagesc(lat,axial,p2p_norm,yR_2); axis image; hold all
+    v=clim;contour(lat,axial,roiHMI>0.5,[1 1],'c','LineWidth',2)
+    clim(v);ylim(ylimVal);xlim([min(lat) max(lat)])
+    set(gca,'yTick',[yTickVal])
+    xlabel('Lat (mm)');ylabel('Axial (mm)')
+    box on;setfigparms;colormap jet
+    colorbar;title(['P2P : ',num2str(harmFreq(fTot))])
+    
+    h2=figure('Position',[620  526-shiftVal    560   420]);
+    arfiBmodeOverlay(lat,axial,p2p_norm,yR_2,blatVer,baxialVer+tranParam.translateMm(2),bmodeVer,0.4,' ');
+    axis image; hold all
+    v=clim;contour(lat,axial,roiHMI>0.5,[1 1],'c','LineWidth',2)
+    clim(v);ylim(ylimVal);xlim([xlimVal])
+    set(gca,'xTick',[xTickVal]);set(gca,'yTick',[yTickVal])
+    xlabel('Lat (mm)');ylabel('Axial (mm)')
+    box on;setfigparms;colormap jet
+    colorbar;title(['P2P : ',num2str(harmFreq(fTot))])
+    title('Draw Mask')
+    roiMask=roipoly;
+    title('Draw Tumor Boundary')
+    roiHMI1 =roipoly;
+
+    data_med=data_med.*double(roiMask);
+    medVal=nanmedian(data_med(:));
+    madVal=mad(data_med(:));
+    lowRan=max(0,medVal-5*madVal);
+    hiRan=medVal+5*madVal;
+    yR_2=[lowRan,hiRan];
+
+    h2=figure('Position',[620  526-shiftVal    560   420]);
+    arfiBmodeOverlay(lat,axial,data_med,yR_2,blatVer,baxialVer+tranParam.translateMm(2),bmodeVer,0.4,' ');
+    axis image; hold all
+    v=clim;contour(lat,axial,roiHMI>0.5,[1 1],'c','LineWidth',2)
+    clim(v);ylim(ylimVal);xlim([xlimVal])
+    set(gca,'xTick',[xTickVal]);set(gca,'yTick',[yTickVal])
+    xlabel('Lat (mm)');ylabel('Axial (mm)')
+    box on;setfigparms;colormap jet
+    colorbar;title(['P2P : ',num2str(harmFreq(fTot))])
+    title('Draw Tumor Boundary Again')
+    roiHMI2 =roipoly;
+end
+roiHMI =0.5*(roiHMI1+roiHMI2)>0.1;
+figure(hB);hold all
+contour(lat,axial,roiHMI,[1 1],'k','LineWidth',2)
+figure(h1);hold all
+contour(lat,axial,roiHMI,[1 1],'k','LineWidth',2)
+figure(h2);hold all
+contour(lat,axial,roiHMI,[1 1],'k','LineWidth',2)
+
+%% Rectangle ROI
+bwProp=regionprops(roiHMI,'centroid','EquivDiameter');
+dx=mean(diff(lat));
+bwProp.Centroid=round(bwProp.Centroid);
+bwProp.EquivDiameter=round(bwProp.EquivDiameter);
+if (bwProp.EquivDiameter*median(diff(axial)))< 7
+    offsetLat=round(offLatMm/mean(diff(lat)));
+else
+    offsetLat=round(offLatMm/mean(diff(lat)));
+end
+bkdRoiSam=round(bkdRoiMm/dx);
+incRoiLat=bwProp.Centroid(1)+(-round(incRoiH*bwProp.EquivDiameter):round(incRoiH*bwProp.EquivDiameter));
+incRoiAx=bwProp.Centroid(2)+(-round(incRoiH*bwProp.EquivDiameter):round(incRoiH*bwProp.EquivDiameter));
+roiINC_rect=zeros(size(roiHMI));
+roiINC_rect(incRoiAx,incRoiLat)=1;
+rtCenLatBkd=bwProp.Centroid(1)+round(bkdRoiH*bwProp.EquivDiameter)+offsetLat;
+% rtRoiLatBkd=rtCenLatBkd+(0:round(bkdRoiH*bwProp.EquivDiameter));
+rtRoiLatBkd=rtCenLatBkd+(0:bkdRoiSam);
+
+ltCenLatBkd=bwProp.Centroid(1)-round(bkdRoiH*bwProp.EquivDiameter)-offsetLat;
+% ltRoiLatBkd=ltCenLatBkd-(round(bkdRoiH*bwProp.EquivDiameter):-1:0);
+ltRoiLatBkd=ltCenLatBkd-(bkdRoiSam:-1:0);
+
+roiBKD_rect=zeros(size(roiHMI));
+if rtRoiLatBkd(end)>size(roiBKD_rect,2)
+    rtRoiLatBkd=rtRoiLatBkd(1):size(roiBKD_rect,2);
+end
+if ltRoiLatBkd(1)<1
+    ltRoiLatBkd=1:ltRoiLatBkd(end);
+end
+roiBKD_rect(incRoiAx,rtRoiLatBkd)=2;
+roiBKD_rect(incRoiAx,ltRoiLatBkd)=1;
+
+figure(h2);hold all
+contour(lat,axial,roiINC_rect.*double(roiMask),[1 1],'r--','LineWidth',2)
+contour(lat,axial,roiBKD_rect.*double(roiMask),[1 1],'b--','LineWidth',2)
+%%
+savefast(fullfile(main_path,bF,saveName1),...
+    'roiINC_rect','roiBKD_rect',....
+    'offsetLat','roiHMI','lat','axial','tranParam','roiMask','incRoiH','bkdRoiH','startPoint')
