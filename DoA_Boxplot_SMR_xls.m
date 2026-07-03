@@ -1,0 +1,778 @@
+clc; clear; close all;
+
+%% ============================================================
+%  PHASE 2 — READ THE EXCEL TABLE BACK AND REPRODUCE EVERYTHING
+%
+%  FIX: tblGetVal is now a proper local function at the bottom,
+%       receiving T, diskRegistry, colName, pushReq2Name explicitly.
+%       collectMouseTPxlsx no longer uses a function handle;
+%       it receives the lookup dependencies directly.
+%% ============================================================
+
+%% ---- USER INPUT --------------------------------------------
+inXlsx     = 'F:\Mouse2\DoA_FlatTable.xlsx';
+outDir     = 'F:\Mouse2\Boxplots\DoA_PD_Boxplots_FromXlsx';
+statChoice = 'medP2P';
+
+%% ---- Wait for the Excel file -------------------------------
+fprintf('Waiting for Excel file:\n  %s\n', inXlsx);
+while ~exist(inXlsx,'file')
+    fprintf('  ...not found yet. Re-checking in 5 s (upload it now).\n');
+    pause(5);
+end
+fprintf('Found Excel file. Loading.\n\n');
+
+T = readtable(inXlsx, 'Sheet', 'DoA');
+% Normalise Date column to char 'yyyy.mm.dd'
+if isdatetime(T.Date)
+    T.Date = cellstr(datestr(T.Date,'yyyy.mm.dd'));
+elseif isnumeric(T.Date)
+    T.Date = cellstr(datestr(T.Date,'yyyy.mm.dd'));
+else
+    T.Date = cellstr(string(T.Date));
+end
+
+%% ---- Time point definitions --------------------------------
+TimePoints = {
+    {'2026.02.16','2026.02.17'}
+    {'2026.02.23','2026.02.24'}
+    {'2026.03.02','2026.03.03','2026.03.04'}
+    {'2026.03.11','2026.03.12','2026.03.13','2026.03.14'}
+    {'2026.03.15','2026.03.16'}
+    {'2026.03.17','2026.03.18','2026.03.19','2026.03.22'}
+};
+TimeLabels = {'TP1','TP2','TP3','TP4','TP5','TP6'};
+DayLabels  = [4 12 20 30 32 36];
+
+GroupCodeMap = containers.Map('KeyType','double','ValueType','char');
+GroupCodeMap(37) = 'Control';
+GroupCodeMap(38) = 'Chemotherapy';
+GroupCodeMap(39) = 'Immunotherapy';
+
+GroupNames = {'Control','Chemotherapy','Immunotherapy'};
+colors  = [0.000 0.447 0.741;
+           0.850 0.325 0.098;
+           0.466 0.674 0.188];
+offsets = [-0.25, 0, 0.25];
+
+%% ---- Push / ROI column-name layout -------------------------
+pushOptions  = [1 2 3 4 0];
+pushOptNames = {'Push1','Push2','Push3','Push4','AvgPush'};
+pushReq2Name = containers.Map([1 2 3 4 0], pushOptNames);
+% colName helper — used inside tblGetVal
+colNameFmt = 'medPD_%s_%s';   % sprintf(colNameFmt, roiTag, pushName)
+
+%% ---- Feature definitions -----------------------------------
+%          Label                  pushReq  roiTag
+FeatDef = {
+    'Push1_PD_HMI',               1,       'HMI';
+    'Push2_PD_HMI',               2,       'HMI';
+    'Push3_PD_HMI',               3,       'HMI';
+    'Push4_PD_HMI',               4,       'HMI';
+    'AvgPush_PD_HMI',             0,       'HMI';
+    'Push1_PD_INC_rect',          1,       'INC';
+    'Push2_PD_INC_rect',          2,       'INC';
+    'Push3_PD_INC_rect',          3,       'INC';
+    'Push4_PD_INC_rect',          4,       'INC';
+    'AvgPush_PD_INC_rect',        0,       'INC';
+};
+nFeat      = size(FeatDef,1);
+featName   = FeatDef(:,1);
+featPush   = cell2mat(FeatDef(:,2));
+featROITag = FeatDef(:,3);
+
+%% ---- Output dir --------------------------------------------
+if ~exist(outDir,'dir'); mkdir(outDir); end
+
+%% ============================================================
+%  BUILD IN-MEMORY REGISTRY FROM TABLE
+%  diskRegistry(ID).group    = 'Control'/...
+%  diskRegistry(ID).dateRow  = Map: dateStr -> row index in T
+%% ============================================================
+allCanonIDs  = unique(T.ID(:))';
+diskRegistry = containers.Map('KeyType','double','ValueType','any');
+
+for ii = 1:numel(allCanonIDs)
+    id  = allCanonIDs(ii);
+    sel = find(T.ID == id);
+    grpC = T.Group(sel(1));
+    if ~isKey(GroupCodeMap, grpC); continue; end
+    entry.group   = GroupCodeMap(grpC);
+    entry.dateRow = containers.Map('KeyType','char','ValueType','double');
+    for k = 1:numel(sel)
+        entry.dateRow(char(T.Date(sel(k)))) = sel(k);
+    end
+    diskRegistry(id) = entry;
+end
+allCanonIDs = cell2mat(keys(diskRegistry));
+fprintf('Registered %d mice from table.\n\n', numel(allCanonIDs));
+
+roiTag2Label = containers.Map({'HMI','INC'}, ...
+    {'roiHMI (tumor contour)', 'roiINC rect'});
+
+%% ============================================================
+%  DATA COLLECTION
+%% ============================================================
+fprintf('=== Collecting data from table ===\n');
+
+featData = cell(nFeat,1); featTP = cell(nFeat,1); featGrp = cell(nFeat,1);
+for f = 1:nFeat; featData{f}=[]; featTP{f}={}; featGrp{f}={}; end
+
+for ii = 1:numel(allCanonIDs)
+    id = allCanonIDs(ii);
+    entry = diskRegistry(id);
+    grpName = entry.group;
+    for t = 1:numel(TimePoints)
+        tpDates = TimePoints{t};
+        tpVals  = nan(nFeat, numel(tpDates));
+        for d = 1:numel(tpDates)
+            cd = tpDates{d};
+            for f = 1:nFeat
+                tpVals(f,d) = tblGetVal(id, cd, featPush(f), featROITag{f}, ...
+                                        T, diskRegistry, colNameFmt, pushReq2Name);
+            end
+        end
+        tpMean = mean(tpVals,2,'omitnan');
+        if all(isnan(tpMean)); continue; end
+        for f = 1:nFeat
+            if ~isnan(tpMean(f))
+                featData{f}(end+1) = tpMean(f);
+                featTP{f}{end+1}   = TimeLabels{t};
+                featGrp{f}{end+1}  = grpName;
+            end
+        end
+    end
+end
+fprintf('Data collection complete.\n\n');
+
+%% ============================================================
+%  BOXPLOTS — combined + individual
+%% ============================================================
+fprintf('=== Generating plots ===\n');
+
+figAll = figure('Color','w','Position',[50 50 2500 950]);
+
+for f = 1:nFeat
+    if isempty(featData{f}); fprintf('  No data: %s\n', featName{f}); continue; end
+    dat  = featData{f};
+    grp  = featGrp{f};
+    cats = categorical(featTP{f}, TimeLabels, 'Ordinal', true);
+    x    = double(cats);
+
+    % ---- subplot in combined figure ----
+    figure(figAll); ax1 = subplot(2,5,f); hold(ax1,'on');
+    for gg = 1:numel(GroupNames)
+        idxG = strcmp(grp, GroupNames{gg});
+        if any(idxG)
+            boxchart(ax1, x(idxG)+offsets(gg), dat(idxG), ...
+                'BoxWidth',0.2,'BoxFaceColor',colors(gg,:), ...
+                'WhiskerLineColor',colors(gg,:),'MarkerStyle','.');
+        end
+    end
+    title(ax1, strrep(featName{f},'_',' '),'FontSize',11,'FontWeight','bold');
+    grid(ax1,'on'); box(ax1,'on');
+    xlim(ax1,[0.5 numel(TimeLabels)+0.5]); xticks(ax1,1:numel(DayLabels));
+    xticklabels(ax1,string(DayLabels));
+    ax1.FontSize=10; ax1.FontWeight='bold'; ax1.XColor='k'; ax1.YColor='k'; ax1.LineWidth=1.2;
+    if mod(f,5)==1
+        ylabel(ax1,[statChoice ' DoA – PD'],'FontSize',11,'FontWeight','bold');
+    end
+
+    % ---- individual figure ----
+    figSingle = figure('Color','w','Position',[200 150 900 650]);
+    ax2 = axes('Parent',figSingle); hold(ax2,'on');
+    for gg = 1:numel(GroupNames)
+        idxG = strcmp(grp,GroupNames{gg});
+        if any(idxG)
+            boxchart(ax2, x(idxG)+offsets(gg), dat(idxG), ...
+                'BoxWidth',0.2,'BoxFaceColor',colors(gg,:), ...
+                'WhiskerLineColor',colors(gg,:),'MarkerStyle','.');
+        end
+    end
+    if featPush(f)==0;     pushStr='Average Push';
+    elseif featPush(f)>=3; pushStr=sprintf('Push %d  (fallback → Push 2)',featPush(f));
+    else;                  pushStr=sprintf('Push %d',featPush(f));
+    end
+    title(ax2, sprintf('DoA – PD  |  %s  |  %s', pushStr, roiTag2Label(featROITag{f})), ...
+        'FontSize',14,'FontWeight','bold');
+    box(ax2,'on'); grid(ax2,'off');
+    xlim(ax2,[0.5 numel(TimeLabels)+0.5]); xticks(ax2,1:numel(DayLabels));
+    xticklabels(ax2,string(DayLabels));
+    ax2.FontSize=14; ax2.FontWeight='bold'; ax2.XColor='k'; ax2.YColor='k'; ax2.LineWidth=1.5;
+    xlabel(ax2,'Days after 4T1 cell implantation','FontSize',15,'FontWeight','bold');
+    ylabel(ax2,[statChoice ' DoA – Peak Displacement'],'FontSize',15,'FontWeight','bold');
+    hL(1)=plot(ax2,nan,nan,'s','MarkerFaceColor',colors(1,:),'MarkerEdgeColor','none','MarkerSize',10);
+    hL(2)=plot(ax2,nan,nan,'s','MarkerFaceColor',colors(2,:),'MarkerEdgeColor','none','MarkerSize',10);
+    hL(3)=plot(ax2,nan,nan,'s','MarkerFaceColor',colors(3,:),'MarkerEdgeColor','none','MarkerSize',10);
+    lgd = legend(ax2,hL,GroupNames,'Location','best'); lgd.FontSize=13; lgd.FontWeight='bold';
+    saveas(figSingle, fullfile(outDir,[featName{f} '.png']));
+    saveas(figSingle, fullfile(outDir,[featName{f} '.fig']));
+    close(figSingle);
+    fprintf('  Saved: %s\n', featName{f});
+end
+
+figure(figAll);
+hL(1)=plot(nan,nan,'s','MarkerFaceColor',colors(1,:),'MarkerEdgeColor','none','MarkerSize',10);
+hL(2)=plot(nan,nan,'s','MarkerFaceColor',colors(2,:),'MarkerEdgeColor','none','MarkerSize',10);
+hL(3)=plot(nan,nan,'s','MarkerFaceColor',colors(3,:),'MarkerEdgeColor','none','MarkerSize',10);
+lgd=legend(hL,GroupNames,'Position',[0.93 0.44 0.05 0.12]); lgd.FontSize=13; lgd.FontWeight='bold';
+sgtitle(['DoA – Peak Displacement  (All Features) — ' statChoice],'FontSize',17,'FontWeight','bold');
+saveas(figAll, fullfile(outDir,'DoA_PD_AllFeatures_Combined.png'));
+saveas(figAll, fullfile(outDir,'DoA_PD_AllFeatures_Combined.fig'));
+
+%% ============================================================
+%  DIFFERENCE PLOTS  (TPX – TP1)/TP1
+%% ============================================================
+fprintf('=== Generating difference plots (TPX – TP1) ===\n');
+outDirDiff = fullfile(outDir,'Difference_vs_TP1');
+if ~exist(outDirDiff,'dir'); mkdir(outDirDiff); end
+figAllDiff = figure('Color','w','Position',[50 50 2500 950]);
+
+for f = 1:nFeat
+    if isempty(featData{f}); continue; end
+    datDiff=[]; grpDiff={}; xDiff=[];
+
+    for gg = 1:numel(GroupNames)
+        gName = GroupNames{gg};
+        for ii = 1:numel(allCanonIDs)
+            id = allCanonIDs(ii); entry = diskRegistry(id);
+            if ~strcmp(entry.group, gName); continue; end
+            mouseVals = nan(1,numel(TimePoints));
+            for t = 1:numel(TimePoints)
+                tpDates = TimePoints{t}; tpV = nan(1,numel(tpDates));
+                for d = 1:numel(tpDates)
+                    tpV(d) = tblGetVal(id, tpDates{d}, featPush(f), featROITag{f}, ...
+                                       T, diskRegistry, colNameFmt, pushReq2Name);
+                end
+                mouseVals(t) = mean(tpV,'omitnan');
+            end
+            baseline = mouseVals(1);
+            if isnan(baseline); continue; end
+            for t = 1:numel(TimePoints)
+                if isnan(mouseVals(t)); continue; end
+                datDiff(end+1) = (mouseVals(t)-baseline)/baseline;
+                grpDiff{end+1} = gName;
+                xDiff(end+1)   = t;
+            end
+        end
+    end
+    if isempty(datDiff); continue; end
+
+    figure(figAllDiff); ax1=subplot(2,5,f); hold(ax1,'on');
+    yline(ax1,0,'k--','LineWidth',1.2);
+    for gg=1:numel(GroupNames)
+        idxG=strcmp(grpDiff,GroupNames{gg});
+        if any(idxG)
+            boxchart(ax1, xDiff(idxG)+offsets(gg), datDiff(idxG), ...
+                'BoxWidth',0.2,'BoxFaceColor',colors(gg,:), ...
+                'WhiskerLineColor',colors(gg,:),'MarkerStyle','.');
+        end
+    end
+    title(ax1,strrep(featName{f},'_',' '),'FontSize',11,'FontWeight','bold');
+    grid(ax1,'on'); box(ax1,'on');
+    xlim(ax1,[0.5 numel(TimeLabels)+0.5]); xticks(ax1,1:numel(DayLabels));
+    xticklabels(ax1,string(DayLabels));
+    ax1.FontSize=10; ax1.FontWeight='bold'; ax1.XColor='k'; ax1.YColor='k'; ax1.LineWidth=1.2;
+    if mod(f,5)==1
+        ylabel(ax1,['\Delta' statChoice ' (TPX – TP1)'],'FontSize',11,'FontWeight','bold');
+    end
+
+    figSingle=figure('Color','w','Position',[200 150 900 650]);
+    ax2=axes('Parent',figSingle); hold(ax2,'on');
+    yline(ax2,0,'k--','LineWidth',1.5,'Label','Baseline (TP1)','FontSize',12);
+    for gg=1:numel(GroupNames)
+        idxG=strcmp(grpDiff,GroupNames{gg});
+        if any(idxG)
+            boxchart(ax2, xDiff(idxG)+offsets(gg), datDiff(idxG), ...
+                'BoxWidth',0.2,'BoxFaceColor',colors(gg,:), ...
+                'WhiskerLineColor',colors(gg,:),'MarkerStyle','.');
+        end
+    end
+    if featPush(f)==0;     pushStr='Average Push';
+    elseif featPush(f)>=3; pushStr=sprintf('Push %d  (fallback → Push 2)',featPush(f));
+    else;                  pushStr=sprintf('Push %d',featPush(f));
+    end
+    title(ax2, sprintf('DoA – PD  \x0394(TPX–TP1)  |  %s  |  %s', ...
+        pushStr, roiTag2Label(featROITag{f})), 'FontSize',14,'FontWeight','bold');
+    box(ax2,'on'); grid(ax2,'off');
+    xlim(ax2,[0.5 numel(TimeLabels)+0.5]); xticks(ax2,1:numel(DayLabels));
+    xticklabels(ax2,string(DayLabels));
+    ax2.FontSize=14; ax2.FontWeight='bold'; ax2.XColor='k'; ax2.YColor='k'; ax2.LineWidth=1.5;
+    xlabel(ax2,'Days after 4T1 cell implantation','FontSize',15,'FontWeight','bold');
+    ylabel(ax2,['\Delta ' statChoice ' – Peak Displacement (TPX – TP1)'],'FontSize',15,'FontWeight','bold');
+    hL(1)=plot(ax2,nan,nan,'s','MarkerFaceColor',colors(1,:),'MarkerEdgeColor','none','MarkerSize',10);
+    hL(2)=plot(ax2,nan,nan,'s','MarkerFaceColor',colors(2,:),'MarkerEdgeColor','none','MarkerSize',10);
+    hL(3)=plot(ax2,nan,nan,'s','MarkerFaceColor',colors(3,:),'MarkerEdgeColor','none','MarkerSize',10);
+    lgd=legend(ax2,hL,GroupNames,'Location','best'); lgd.FontSize=13; lgd.FontWeight='bold';
+    saveas(figSingle, fullfile(outDirDiff,['Diff_' featName{f} '.png']));
+    saveas(figSingle, fullfile(outDirDiff,['Diff_' featName{f} '.fig']));
+    close(figSingle);
+    fprintf('  Saved diff: %s\n', featName{f});
+end
+
+figure(figAllDiff);
+hL(1)=plot(nan,nan,'s','MarkerFaceColor',colors(1,:),'MarkerEdgeColor','none','MarkerSize',10);
+hL(2)=plot(nan,nan,'s','MarkerFaceColor',colors(2,:),'MarkerEdgeColor','none','MarkerSize',10);
+hL(3)=plot(nan,nan,'s','MarkerFaceColor',colors(3,:),'MarkerEdgeColor','none','MarkerSize',10);
+lgd=legend(hL,GroupNames,'Position',[0.93 0.44 0.05 0.12]); lgd.FontSize=13; lgd.FontWeight='bold';
+sgtitle(['\DeltaDoA – Peak Displacement  (TPX – TP1) — ' statChoice],'FontSize',17,'FontWeight','bold');
+saveas(figAllDiff, fullfile(outDirDiff,'Diff_DoA_PD_AllFeatures_Combined.png'));
+saveas(figAllDiff, fullfile(outDirDiff,'Diff_DoA_PD_AllFeatures_Combined.fig'));
+
+%% ============================================================
+%  PER-MOUSE TRAJECTORY PLOTS
+%% ============================================================
+fprintf('=== Generating per-mouse trajectory plots ===\n');
+outDirMouse = fullfile(outDir,'PerMouse_Trajectories');
+if ~exist(outDirMouse,'dir'); mkdir(outDirMouse); end
+
+pushCols     = [1 2 3 4 0];
+pushLabels   = {'Push 1','Push 2','Push 3','Push 4','Avg Push'};
+roiRowTags   = {'HMI','INC'};
+roiRowLabels = {'HMI (tumor contour)','INC rect'};
+nCols = numel(pushCols); nRows = numel(roiRowTags);
+basePalette  = lines(15);
+
+for gg = 1:numel(GroupNames)
+    gName = GroupNames{gg};
+    grpMouseIDs = sort(allCanonIDs(arrayfun(@(id) ...
+        strcmp(diskRegistry(id).group, gName), allCanonIDs)));
+    nMice = numel(grpMouseIDs);
+    if nMice==0; continue; end
+    mouseColors = basePalette(mod((1:nMice)-1, size(basePalette,1))+1, :);
+
+    figG = figure('Color','w', ...
+        'Position',[30 30 320*nCols+120 320*nRows+100], ...
+        'Name',sprintf('Per-Mouse Trajectories — %s',gName));
+
+    for rr = 1:nRows
+        roiTag = roiRowTags{rr};
+        for cc = 1:nCols
+            pushReq = pushCols(cc);
+            ax = subplot(nRows, nCols, (rr-1)*nCols+cc);
+            hold(ax,'on');
+            legendEntries={}; legendHandles=gobjects(0); missingMarkers=gobjects(0);
+
+            for mm = 1:nMice
+                id = grpMouseIDs(mm); col = mouseColors(mm,:);
+                yVals = nan(1,numel(TimePoints));
+                for t = 1:numel(TimePoints)
+                    tpDates = TimePoints{t}; tpV = nan(1,numel(tpDates));
+                    for d = 1:numel(tpDates)
+                        tpV(d) = tblGetVal(id, tpDates{d}, pushReq, roiTag, ...
+                                           T, diskRegistry, colNameFmt, pushReq2Name);
+                    end
+                    yVals(t) = mean(tpV,'omitnan');
+                end
+                if all(isnan(yVals)); continue; end
+                hLine = plot(ax, 1:numel(TimePoints), yVals, '-o', ...
+                    'Color',col,'LineWidth',1.8,'MarkerSize',6, ...
+                    'MarkerFaceColor',col,'MarkerEdgeColor','none', ...
+                    'DisplayName',sprintf('Mouse %d',id));
+                legendHandles(end+1) = hLine;
+                legendEntries{end+1} = sprintf('Mouse %d',id);
+                missIdx = find(isnan(yVals));
+                for mk = 1:numel(missIdx)
+                    missingMarkers(end+1) = plot(ax, missIdx(mk), NaN, 'x', ...
+                        'Color',col*0.5,'LineWidth',2,'MarkerSize',12, ...
+                        'HandleVisibility','off');
+                end
+            end
+
+            xlim(ax,[0.5 numel(TimeLabels)+0.5]); xticks(ax,1:numel(TimeLabels));
+            xticklabels(ax,string(DayLabels));
+            ax.FontSize=11; ax.FontWeight='bold'; ax.XColor='k'; ax.YColor='k'; ax.LineWidth=1.3;
+            grid(ax,'on'); box(ax,'on');
+            yl=ylim(ax); yBot=yl(1)-0.08*(yl(2)-yl(1));
+            for hh=1:numel(missingMarkers)
+                if isvalid(missingMarkers(hh)); missingMarkers(hh).YData=yBot; end
+            end
+            if rr==1; title(ax,pushLabels{cc},'FontSize',13,'FontWeight','bold'); end
+            if cc==1; ylabel(ax,{roiRowLabels{rr};[statChoice ' DoA–PD']},'FontSize',12,'FontWeight','bold'); end
+            if rr==nRows; xlabel(ax,'Days after 4T1 implantation','FontSize',11,'FontWeight','bold'); end
+            if cc==nCols && ~isempty(legendHandles)
+                legend(ax,legendHandles,legendEntries,'Location','eastoutside','FontSize',10,'FontWeight','bold');
+            end
+        end
+    end
+
+    annotation(figG,'textbox',[0 0 1 0.03], ...
+        'String','Dark  ×  at axis bottom = no data for that TP', ...
+        'EdgeColor','none','HorizontalAlignment','center','FontSize',10,'FontAngle','italic');
+    sgtitle(figG, sprintf('Per-Mouse DoA–PD Trajectories  |  %s  |  %s', gName, statChoice), ...
+        'FontSize',16,'FontWeight','bold');
+    saveas(figG, fullfile(outDirMouse, sprintf('PerMouse_%s.png',gName)));
+    saveas(figG, fullfile(outDirMouse, sprintf('PerMouse_%s.fig',gName)));
+    fprintf('  Saved: PerMouse_%s\n', gName);
+end
+
+%% ============================================================
+%  PUSH OPTIMIZER — Q3-based scoring
+%% ============================================================
+outDirOpt = fullfile(outDir,'OptimizedPush_Q3');
+if ~exist(outDirOpt,'dir'); mkdir(outDirOpt); end
+
+statChoices  = {statChoice};
+roiList      = {'HMI','INC'};
+roiListNames = {'HMI','INC_rect'};
+pushOptionsO = [1 2 3 4 0];
+pushOptNamesO= {'Push1','Push2','Push3','Push4','AvgPush'};
+nTP     = numel(TimeLabels);
+nPushOpt= numel(pushOptionsO);
+
+monoWeights  = 1:nTP-1;  sepWeights = 1:nTP;
+lambda_mono  = 0.6;       lambda_sep = 0.4;
+sepDirection = {'Control','Chemotherapy','Immunotherapy'};
+
+fprintf('Building push combination table (Q3 scoring)...\n');
+[g1,g2,g3,g4,g5,g6] = ndgrid(1:nPushOpt,1:nPushOpt,1:nPushOpt,...
+                               1:nPushOpt,1:nPushOpt,1:nPushOpt);
+allCombos = [g1(:) g2(:) g3(:) g4(:) g5(:) g6(:)];
+nCombos   = size(allCombos,1);
+fprintf('Total combinations: %d\n\n', nCombos);
+
+OptResults = struct();
+
+for si = 1:numel(statChoices)
+    sc = statChoices{si};
+    for ri = 1:numel(roiList)
+        roiTag = roiList{ri}; roiNm = roiListNames{ri};
+        fprintf('=== %s | %s ===\n', sc, roiNm);
+
+        allMouseData = cell(numel(GroupNames),1);
+        allMouseIDsG = cell(numel(GroupNames),1);
+
+        for gi = 1:numel(GroupNames)
+            gName   = GroupNames{gi};
+            grpMIDs = sort(allCanonIDs(arrayfun(@(id) ...
+                strcmp(diskRegistry(id).group,gName), allCanonIDs)));
+            nM = numel(grpMIDs);
+            allMouseIDsG{gi}  = grpMIDs;
+            allMouseData{gi}  = nan(nM, nTP, nPushOpt);
+            for pi = 1:nPushOpt
+                pReq = pushOptionsO(pi);
+                mVals = collectMouseTPxlsx(grpMIDs, diskRegistry, TimePoints, ...
+                    pReq, roiTag, T, colNameFmt, pushReq2Name);
+                allMouseData{gi}(:,:,pi) = mVals;
+            end
+            fprintf('  Group %-15s: %d mice\n', gName, nM);
+        end
+
+        % Precompute Q3 for all groups / pushes / TPs
+        grpQ3All = cell(numel(GroupNames),1);
+        for gi = 1:numel(GroupNames)
+            grpQ3All{gi} = nan(nPushOpt, nTP);
+            for pi = 1:nPushOpt
+                for t = 1:nTP
+                    vals = allMouseData{gi}(:,t,pi);
+                    vals = vals(~isnan(vals));
+                    if ~isempty(vals); grpQ3All{gi}(pi,t) = prctile(vals,75); end
+                end
+            end
+        end
+
+        for gi = 1:numel(GroupNames)
+            gName = GroupNames{gi};
+            fprintf('  Optimizing: %s | %s | %s\n', sc, roiNm, gName);
+            bestScore=-inf; bestCombo=ones(1,nTP);
+            bestIsMono=false; bestIsSep=false;
+            bestMonoScore=0; bestSepScore=0; foundStrict=false;
+
+            for ci = 1:nCombos
+                pVec = allCombos(ci,:);
+                grpQ3TP = cell(numel(GroupNames),1);
+                for g = 1:numel(GroupNames)
+                    grpQ3TP{g} = arrayfun(@(t) grpQ3All{g}(pVec(t),t), 1:nTP);
+                end
+                [sc_val,isMono,isSep,mSc,sSc] = scorePushComboQ3(grpQ3TP, ...
+                    monoWeights, sepWeights, lambda_mono, lambda_sep, ...
+                    nTP, GroupNames, sepDirection);
+                if isMono && sc_val>bestScore
+                    bestScore=sc_val; bestCombo=pVec;
+                    bestIsMono=isMono; bestIsSep=isSep;
+                    bestMonoScore=mSc; bestSepScore=sSc; foundStrict=true;
+                end
+            end
+
+            if ~foundStrict
+                fprintf('    !! Strict not found → SOFT fallback\n'); bestScore=-inf;
+                for ci = 1:nCombos
+                    pVec = allCombos(ci,:);
+                    grpQ3TP = cell(numel(GroupNames),1);
+                    for g = 1:numel(GroupNames)
+                        grpQ3TP{g} = arrayfun(@(t) grpQ3All{g}(pVec(t),t), 1:nTP);
+                    end
+                    [sc_val,isMono,isSep,mSc,sSc] = scorePushComboQ3(grpQ3TP, ...
+                        monoWeights, sepWeights, lambda_mono, lambda_sep, ...
+                        nTP, GroupNames, sepDirection);
+                    if sc_val>bestScore
+                        bestScore=sc_val; bestCombo=pVec;
+                        bestIsMono=isMono; bestIsSep=isSep;
+                        bestMonoScore=mSc; bestSepScore=sSc;
+                    end
+                end
+            end
+
+            nM = size(allMouseData{gi},1); optMouseVals = nan(nM,nTP);
+            for t = 1:nTP; optMouseVals(:,t) = allMouseData{gi}(:,t,bestCombo(t)); end
+
+            res.bestCombo=bestCombo; res.pushNames=pushOptNamesO(bestCombo);
+            res.foundStrict=foundStrict; res.score=bestScore;
+            res.isMono=bestIsMono; res.isSep=bestIsSep;
+            res.monoScore=bestMonoScore; res.sepScore=bestSepScore;
+            res.mouseIDs=allMouseIDsG{gi}; res.mouseData=allMouseData{gi};
+            res.grpQ3All=grpQ3All{gi}; res.optMouseVals=optMouseVals;
+            res.optQ3 = arrayfun(@(t) grpQ3All{gi}(bestCombo(t),t), 1:nTP);
+            OptResults(si,ri,gi).res = res;
+
+            fprintf('    Combo  : %s\n', strjoin(pushOptNamesO(bestCombo),' | '));
+            fprintf('    Q3 traj: %s\n', num2str(res.optQ3,'%.3f  '));
+            fprintf('    Strict : %d | Sep: %d | Score: %.4f\n', foundStrict, bestIsSep, bestScore);
+            fprintf('    Mono=%.3f  Sep=%.3f\n\n', bestMonoScore, bestSepScore);
+        end
+    end
+end
+
+%% ---- Summary table -----------------------------------------
+fprintf('\n%s\n',repmat('=',1,90));
+fprintf('Q3-BASED OPTIMIZATION SUMMARY\n'); fprintf('%s\n',repmat('=',1,90));
+fprintf('%-10s %-10s %-15s %-8s %-8s %-8s %-7s  Push Selection\n', ...
+    'Stat','ROI','Group','Strict','Mono','Sep','Score');
+fprintf('%s\n',repmat('-',1,110));
+for si=1:numel(statChoices)
+    for ri=1:numel(roiList)
+        for gi=1:numel(GroupNames)
+            res=OptResults(si,ri,gi).res;
+            fprintf('%-10s %-10s %-15s %-8d %-8d %-8d %-7.3f  %s\n', ...
+                statChoices{si},roiListNames{ri},GroupNames{gi}, ...
+                res.foundStrict,res.isMono,res.isSep,res.score,strjoin(res.pushNames,' | '));
+        end
+        fprintf('%s\n',repmat('-',1,110));
+    end
+end
+
+%% ---- PLOT 1: Per-group boxplots with Q3 trend --------------
+fprintf('\n=== Generating Q3-optimized boxplots ===\n');
+for si = 1:numel(statChoices)
+    sc = statChoices{si};
+    for ri = 1:numel(roiList)
+        roiNm = roiListNames{ri};
+        figBox = figure('Color','w','Position',[50 50 1600 560]);
+        sgtitle(sprintf('Q3-Optimized Push — %s | %s',sc,roiNm),'FontSize',16,'FontWeight','bold');
+        for gi = 1:numel(GroupNames)
+            res = OptResults(si,ri,gi).res; col = colors(gi,:);
+            ax = subplot(1,3,gi); hold(ax,'on');
+            datVec=[]; xVec=[];
+            for t = 1:nTP
+                vals=res.optMouseVals(:,t); ok=~isnan(vals);
+                datVec=[datVec; vals(ok)]; xVec=[xVec; repmat(t,sum(ok),1)]; %#ok<AGROW>
+            end
+            if ~isempty(datVec)
+                boxchart(ax,xVec,datVec,'BoxWidth',0.45,'BoxFaceColor',col, ...
+                    'WhiskerLineColor',col,'MarkerStyle','.','MarkerColor',col);
+            end
+            plot(ax,1:nTP,res.optQ3,'-^','Color',col*0.55,'LineWidth',2.5,'MarkerSize',9, ...
+                'MarkerFaceColor',col*0.55,'DisplayName','Q3 trend');
+            medLine=arrayfun(@(t) median(res.optMouseVals(:,t),'omitnan'),1:nTP);
+            plot(ax,1:nTP,medLine,'--o','Color',col*0.75,'LineWidth',1.3,'MarkerSize',6, ...
+                'MarkerFaceColor',col*0.75,'DisplayName','Median');
+            legend(ax,'Q3 trend','Median','Location','northwest','FontSize',9,'FontWeight','bold');
+            yl=ylim(ax); yAnn=yl(1)+0.04*(yl(2)-yl(1));
+            for t=1:nTP
+                pN=strrep(res.pushNames{t},'Push','P'); pN=strrep(pN,'AvgPush','Av');
+                text(ax,t,yAnn,pN,'HorizontalAlignment','center','FontSize',8,'FontWeight','bold','Color',col*0.65);
+            end
+            if res.foundStrict; badge='STRICT ✓'; bcol=[0 0.52 0]; else; badge='SOFT ~'; bcol=[0.72 0.37 0]; end
+            title(ax,sprintf('%s\n(%s)  Score=%.3f',GroupNames{gi},badge,res.score), ...
+                'FontSize',12,'FontWeight','bold','Color',bcol);
+            xlim(ax,[0.5 nTP+0.5]); xticks(ax,1:nTP); xticklabels(ax,string(DayLabels));
+            xlabel(ax,'Days after 4T1 implantation','FontSize',11,'FontWeight','bold');
+            if gi==1; ylabel(ax,[sc ' DoA–PD'],'FontSize',11,'FontWeight','bold'); end
+            ax.FontSize=11; ax.FontWeight='bold'; ax.XColor='k'; ax.YColor='k'; ax.LineWidth=1.3;
+            grid(ax,'on'); box(ax,'on');
+        end
+        saveas(figBox,fullfile(outDirOpt,sprintf('Q3_OptBox_%s_%s.png',sc,roiNm)));
+        saveas(figBox,fullfile(outDirOpt,sprintf('Q3_OptBox_%s_%s.fig',sc,roiNm)));
+        fprintf('  Saved: Q3_OptBox_%s_%s\n',sc,roiNm);
+    end
+end
+
+%% ---- PLOT 2: All groups overlaid ---------------------------
+fprintf('\n=== Generating Q3 combined overlay ===\n');
+for si=1:numel(statChoices)
+    sc=statChoices{si};
+    for ri=1:numel(roiList)
+        roiNm=roiListNames{ri};
+        figComb=figure('Color','w','Position',[50 50 980 680]);
+        ax=axes('Parent',figComb); hold(ax,'on');
+        offC=[-0.28,0,0.28]; hBox=gobjects(numel(GroupNames),1); hQ3=gobjects(numel(GroupNames),1);
+        for gi=1:numel(GroupNames)
+            res=OptResults(si,ri,gi).res; col=colors(gi,:);
+            datVec=[]; xVec=[];
+            for t=1:nTP
+                vals=res.optMouseVals(:,t); ok=~isnan(vals);
+                datVec=[datVec; vals(ok)]; xVec=[xVec; repmat(t,sum(ok),1)]; %#ok<AGROW>
+            end
+            if ~isempty(datVec)
+                boxchart(ax,xVec+offC(gi),datVec,'BoxWidth',0.22,'BoxFaceColor',col, ...
+                    'WhiskerLineColor',col,'MarkerStyle','.','MarkerColor',col);
+            end
+            hQ3(gi)=plot(ax,(1:nTP)+offC(gi),res.optQ3,'-^','Color',col*0.55,'LineWidth',3.0, ...
+                'MarkerSize',10,'MarkerFaceColor',col*0.55,'DisplayName',sprintf('%s Q3',GroupNames{gi}));
+            hBox(gi)=plot(ax,nan,nan,'s','MarkerFaceColor',col,'MarkerEdgeColor','none', ...
+                'MarkerSize',11,'DisplayName',GroupNames{gi});
+        end
+        yl=ylim(ax); yA=yl(1)-[0.10 0.17 0.24]*(yl(2)-yl(1));
+        ax.YLim(1)=yl(1)-0.28*(yl(2)-yl(1));
+        for gi=1:numel(GroupNames)
+            res=OptResults(si,ri,gi).res;
+            for t=1:nTP
+                pN=strrep(res.pushNames{t},'Push','P'); pN=strrep(pN,'AvgPush','Av');
+                text(ax,t+offC(gi),yA(gi),pN,'HorizontalAlignment','center', ...
+                    'FontSize',7.5,'FontWeight','bold','Color',colors(gi,:)*0.7);
+            end
+            text(ax,0.3,yA(gi),GroupNames{gi}(1:min(4,end)),'HorizontalAlignment','right', ...
+                'FontSize',7.5,'FontWeight','bold','Color',colors(gi,:)*0.7);
+        end
+        legend(ax,[hBox;hQ3],[GroupNames,strcat(GroupNames,' Q3')],'Location','northwest', ...
+            'FontSize',10,'FontWeight','bold','NumColumns',2);
+        title(ax,sprintf('Q3-Optimized Push — %s | %s\n▲ = Q3 trend  |  box = distribution',sc,roiNm), ...
+            'FontSize',13,'FontWeight','bold');
+        xlim(ax,[0.5 nTP+0.5]); xticks(ax,1:nTP); xticklabels(ax,string(DayLabels));
+        xlabel(ax,'Days after 4T1 implantation','FontSize',13,'FontWeight','bold');
+        ylabel(ax,[sc ' DoA–PD'],'FontSize',13,'FontWeight','bold');
+        ax.FontSize=12; ax.FontWeight='bold'; ax.XColor='k'; ax.YColor='k'; ax.LineWidth=1.4;
+        grid(ax,'on'); box(ax,'on');
+        saveas(figComb,fullfile(outDirOpt,sprintf('Q3_OptCombined_%s_%s.png',sc,roiNm)));
+        saveas(figComb,fullfile(outDirOpt,sprintf('Q3_OptCombined_%s_%s.fig',sc,roiNm)));
+        fprintf('  Saved: Q3_OptCombined_%s_%s\n',sc,roiNm);
+    end
+end
+
+%% ---- PLOT 3: Per-mouse trajectories with Q3 overlay --------
+fprintf('\n=== Generating Q3 per-mouse trajectory plots ===\n');
+basePalette=lines(15);
+for si=1:numel(statChoices)
+    sc=statChoices{si};
+    for ri=1:numel(roiList)
+        roiNm=roiListNames{ri};
+        for gi=1:numel(GroupNames)
+            res=OptResults(si,ri,gi).res; gName=GroupNames{gi};
+            nM=numel(res.mouseIDs); mCols=basePalette(mod((1:nM)-1,size(basePalette,1))+1,:);
+            figT=figure('Color','w','Position',[60 60 870 520]);
+            ax=axes('Parent',figT); hold(ax,'on');
+            hLines=gobjects(nM,1);
+            for mm=1:nM
+                yV=res.optMouseVals(mm,:);
+                hLines(mm)=plot(ax,1:nTP,yV,'-o','Color',mCols(mm,:),'LineWidth',1.8,'MarkerSize',6, ...
+                    'MarkerFaceColor',mCols(mm,:),'MarkerEdgeColor','none', ...
+                    'DisplayName',sprintf('Mouse %d',res.mouseIDs(mm)));
+                missIdx=find(isnan(yV));
+                if ~isempty(missIdx)
+                    yl=ylim(ax); yBt=yl(1)-0.05*(yl(2)-yl(1));
+                    plot(ax,missIdx,repmat(yBt,1,numel(missIdx)),'x', ...
+                        'Color',mCols(mm,:)*0.6,'LineWidth',2.5,'MarkerSize',12,'HandleVisibility','off');
+                end
+            end
+            hQ3line=plot(ax,1:nTP,res.optQ3,'-^k','LineWidth',3,'MarkerSize',10, ...
+                'MarkerFaceColor','k','DisplayName','Group Q3');
+            medT=arrayfun(@(t) median(res.optMouseVals(:,t),'omitnan'),1:nTP);
+            hMed=plot(ax,1:nTP,medT,'--ok','LineWidth',1.5,'MarkerSize',7, ...
+                'MarkerFaceColor','w','DisplayName','Group Median');
+            yl2=ylim(ax); yTop=yl2(2)+0.02*(yl2(2)-yl2(1));
+            ax.YLim(2)=yl2(2)+0.12*(yl2(2)-yl2(1));
+            for t=1:nTP
+                pN=strrep(res.pushNames{t},'Push','P'); pN=strrep(pN,'AvgPush','Av');
+                text(ax,t,yTop,pN,'HorizontalAlignment','center','FontSize',9, ...
+                    'FontWeight','bold','Color',[0.3 0.3 0.3]);
+            end
+            if res.foundStrict; modeStr='STRICT'; mc=[0 0.5 0]; else; modeStr='SOFT'; mc=[0.68 0.33 0]; end
+            title(ax,sprintf('%s | %s | %s  [%s  Q3-Score=%.3f]',sc,roiNm,gName,modeStr,res.score), ...
+                'FontSize',12,'FontWeight','bold','Color',mc);
+            xlim(ax,[0.5 nTP+0.5]); xticks(ax,1:nTP); xticklabels(ax,string(DayLabels));
+            xlabel(ax,'Days after 4T1 implantation','FontSize',12,'FontWeight','bold');
+            ylabel(ax,[sc ' DoA–PD'],'FontSize',12,'FontWeight','bold');
+            ax.FontSize=11; ax.FontWeight='bold'; ax.XColor='k'; ax.YColor='k'; ax.LineWidth=1.3;
+            grid(ax,'on'); box(ax,'on');
+            legend(ax,[hLines;hQ3line;hMed],'Location','eastoutside','FontSize',10,'FontWeight','bold');
+            fName=sprintf('Q3_OptTraj_%s_%s_%s',sc,roiNm,gName);
+            saveas(figT,fullfile(outDirOpt,[fName '.png']));
+            saveas(figT,fullfile(outDirOpt,[fName '.fig']));
+            fprintf('  Saved: %s\n',fName);
+        end
+    end
+end
+
+fprintf('\n=== Done. All outputs in:\n  %s\n', outDir);
+
+%% ============================================================
+%  LOCAL FUNCTIONS  (must be at end of file)
+%% ============================================================
+
+%% ----------------------------------------------------------
+%  tblGetVal  — look up one cell of the flat table
+%    Inputs passed explicitly to avoid closure / nested-fn error.
+%% ----------------------------------------------------------
+function v = tblGetVal(id, dateStr, pushReq, roiTag, ...
+                       T, diskRegistry, colNameFmt, pushReq2Name)
+    v = NaN;
+    if ~isKey(diskRegistry, id); return; end
+    e = diskRegistry(id);
+    if ~isKey(e.dateRow, dateStr); return; end
+    r  = e.dateRow(dateStr);
+    cn = sprintf(colNameFmt, roiTag, pushReq2Name(pushReq));
+    if ismember(cn, T.Properties.VariableNames)
+        v = T.(cn)(r);
+    end
+end
+
+%% ----------------------------------------------------------
+%  collectMouseTPxlsx  — per-mouse × per-TP matrix
+%    Lookup dependencies passed explicitly (no function handles).
+%% ----------------------------------------------------------
+function mouseVals = collectMouseTPxlsx(IDs, diskRegistry, TimePoints, ...
+        pushReq, roiTag, T, colNameFmt, pushReq2Name)
+    mouseVals = nan(numel(IDs), numel(TimePoints));
+    for ii = 1:numel(IDs)
+        id = IDs(ii);
+        for t = 1:numel(TimePoints)
+            tpV = nan(1, numel(TimePoints{t}));
+            for d = 1:numel(TimePoints{t})
+                tpV(d) = tblGetVal(id, TimePoints{t}{d}, pushReq, roiTag, ...
+                                   T, diskRegistry, colNameFmt, pushReq2Name);
+            end
+            mouseVals(ii,t) = mean(tpV,'omitnan');
+        end
+    end
+end
+
+%% ----------------------------------------------------------
+%  scorePushComboQ3
+%% ----------------------------------------------------------
+function [score,isMono,isSep,monoScore,sepScore] = scorePushComboQ3( ...
+        grpQ3TP, monoWeights, sepWeights, lambda_mono, lambda_sep, ...
+        nTP, GroupNames, direction)
+    monoScore=0; isMono=true;
+    for g=1:numel(grpQ3TP)
+        q3=grpQ3TP{g};
+        for t=1:nTP-1
+            v1=q3(t); v2=q3(t+1);
+            if isnan(v1)||isnan(v2); continue; end
+            if v2>v1; monoScore=monoScore+monoWeights(t); else; isMono=false; end
+        end
+    end
+    monoScore=monoScore/max(sum(monoWeights)*numel(grpQ3TP),1);
+    sepScore=0; isSep=true; nPairs=numel(direction)-1;
+    for t=1:nTP
+        for p=1:nPairs
+            g1=find(strcmp(GroupNames,direction{p}),1);
+            g2=find(strcmp(GroupNames,direction{p+1}),1);
+            if isempty(g1)||isempty(g2); continue; end
+            q1=grpQ3TP{g1}(t); q2=grpQ3TP{g2}(t);
+            if isnan(q1)||isnan(q2); continue; end
+            if q1>q2; sepScore=sepScore+sepWeights(t); else; isSep=false; end
+        end
+    end
+    sepScore=sepScore/max(sum(sepWeights)*nPairs,1);
+    score=lambda_mono*monoScore+lambda_sep*sepScore;
+end
